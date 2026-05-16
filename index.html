@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>名刺管理（Vision API＋vCard＋Excel）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- SheetJS (xlsx) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <!-- JSZip -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 10px; }
+    h1 { font-size: 20px; margin-bottom: 8px; }
+    .section { border: 1px solid #ccc; padding: 8px; margin-bottom: 10px; }
+    .label { font-weight: bold; }
+    .contact-card { border: 1px solid #ddd; padding: 6px; margin-bottom: 6px; display: flex; gap: 8px; }
+    .contact-img { width: 120px; height: auto; object-fit: cover; border: 1px solid #ccc; }
+    .contact-fields { flex: 1; font-size: 13px; }
+    input[type="text"], input[type="tel"], input[type="email"] { width: 100%; box-sizing: border-box; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .small { font-size: 12px; color: #555; }
+  </style>
+</head>
+<body>
+<h1>名刺管理（HTML版）</h1>
+
+<div class="section">
+  <div class="label">Vision APIキー</div>
+  <input id="apiKeyInput" type="password" placeholder="AIza..." style="width: 100%; box-sizing: border-box;">
+  <button onclick="saveApiKey()">APIキー保存</button>
+  <span id="apiKeyStatus" class="small"></span>
+  <div class="small">
+    ※キーはこの端末の localStorage にのみ保存され、GitHub などには保存されません。
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">名刺の撮影 / 画像選択</div>
+  <input id="photoInput" type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)">
+  <div class="small">
+    ※名刺が画面いっぱいになるように撮影してください。内部で約 1075×650px にリサイズしてOCRします。
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">検索・並び替え・出力</div>
+  <div class="toolbar">
+    <input id="searchInput" type="text" placeholder="名前・会社・タグで検索" oninput="onSearchChange()">
+    <select id="sortSelect" onchange="onSortChange()">
+      <option value="created">並び替え：登録順</option>
+      <option value="name">並び替え：名前</option>
+      <option value="company">並び替え：会社</option>
+    </select>
+  </div>
+  <div class="toolbar">
+    <button onclick="downloadCSV()">CSV出力</button>
+    <button onclick="downloadXlsx()">Excel（.xlsx）出力</button>
+    <button onclick="downloadVCardZip()">選択した連絡先を vCard ZIP 出力</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">連絡先リスト</div>
+  <div class="small">※チェックを付けたものが ZIP 一括 vCard の対象になります。</div>
+  <div id="list"></div>
+</div>
+
+<!-- リサイズ用キャンバス（非表示） -->
+<canvas id="resizeCanvas" style="display:none;"></canvas>
+
+<script>
+  const contacts = []; // {id, name, phone, email, company, tags[], photoUrl, createdAt}
+  let searchKeyword = "";
+  let sortKey = "created";
+
+  // 初期化
+  window.addEventListener("load", () => {
+    const key = localStorage.getItem("vision_api_key");
+    if (key) {
+      document.getElementById("apiKeyStatus").textContent = "保存済み";
+    }
+  });
+
+  function saveApiKey() {
+    const key = document.getElementById("apiKeyInput").value.trim();
+    if (!key) {
+      alert("APIキーを入力してください。");
+      return;
+    }
+    localStorage.setItem("vision_api_key", key);
+    document.getElementById("apiKeyStatus").textContent = "保存済み";
+    document.getElementById("apiKeyInput").value = "";
+  }
+
+  // 画像選択
+  async function onPhotoSelected(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const resized = await resizeImageToCanvas(file, 1075, 650);
+    const base64 = resized.base64;
+    const photoUrl = resized.url;
+
+    // OCR
+    let text = "";
+    try {
+      text = await callVisionAPI(base64);
+    } catch (err) {
+      console.error(err);
+      alert("Vision API 呼び出しでエラーが発生しました。APIキーやネットワークを確認してください。");
+    }
+
+    const parsed = parseOcrText(text);
+    const contact = {
+      id: Date.now() + "_" + Math.random().toString(16).slice(2),
+      name: parsed.name || "",
+      phone: parsed.phone || "",
+      email: parsed.email || "",
+      company: parsed.company || "",
+      tags: [],
+      photoUrl,
+      createdAt: Date.now(),
+      selected: false
+    };
+    contacts.push(contact);
+    renderList();
+    e.target.value = "";
+  }
+
+  // 画像を 1075x650 にリサイズ
+  function resizeImageToCanvas(file, targetW, targetH) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.getElementById("resizeCanvas");
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, targetW, targetH);
+
+          // アスペクト比を保って中央に配置
+          const scale = Math.min(targetW / img.width, targetH / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          const x = (targetW - w) / 2;
+          const y = (targetH - h) / 2;
+          ctx.drawImage(img, x, y, w, h);
+
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+          resolve({ base64, url: dataUrl });
+        };
+        img.onerror = reject;
+        img.src = reader.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Vision API 呼び出し
+  async function callVisionAPI(base64Image) {
+    const apiKey = localStorage.getItem("vision_api_key");
+    if (!apiKey) {
+      throw new Error("Vision APIキーが保存されていません。");
+    }
+
+    const body = {
+      requests: [
+        {
+          image: { content: base64Image },
+          features: [{ type: "TEXT_DETECTION" }]
+        }
+      ]
+    };
+
+    const res = await fetch(
+      "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }
+    );
+
+    if (!res.ok) {
+      const t = await res.text();
+      console.error(t);
+      throw new Error("Vision API エラー: " + res.status);
+    }
+
+    const data = await res.json();
+    const text = data.responses?.[0]?.fullTextAnnotation?.text || "";
+    return text;
+  }
+
+  // OCR結果の簡易パース
+  function parseOcrText(text) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+    let phone = "";
+    let email = "";
+    let company = "";
+    let name = "";
+
+    const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+    const phoneRegex = /0\d{1,4}-\d{1,4}-\d{3,4}|0\d{9,10}/;
+
+    for (const line of lines) {
+      if (!email && emailRegex.test(line)) {
+        email = line.match(emailRegex)[0];
+      }
+      if (!phone && phoneRegex.test(line)) {
+        phone = line.match(phoneRegex)[0];
+      }
+    }
+
+    // 会社名っぽい行（株式会社/有限会社/合同会社など）
+    const companyLine = lines.find(l => /株式会社|有限会社|合同会社|Inc\.|Co\./i.test(l));
+    if (companyLine) company = companyLine;
+
+    // 名前候補：電話・メール・会社以外の短めの行
+    const nameCandidate = lines.find(l =>
+      l !== companyLine &&
+      !l.includes(phone) &&
+      !l.includes(email) &&
+      l.length >= 2 && l.length <= 15
+    );
+    if (nameCandidate) name = nameCandidate;
+
+    return { name, phone, email, company };
+  }
+
+  // 検索・並び替え
+  function onSearchChange() {
+    searchKeyword = document.getElementById("searchInput").value.toLowerCase();
+    renderList();
+  }
+
+  function onSortChange() {
+    sortKey = document.getElementById("sortSelect").value;
+    renderList();
+  }
+
+  function getFilteredSortedContacts() {
+    let list = contacts.slice();
+
+    if (searchKeyword) {
+      list = list.filter(c => {
+        const t = [
+          c.name || "",
+          c.company || "",
+          (c.tags || []).join(" ")
+        ].join(" ").toLowerCase();
+        return t.includes(searchKeyword);
+      });
+    }
+
+    if (sortKey === "name") {
+      list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+    } else if (sortKey === "company") {
+      list.sort((a, b) => (a.company || "").localeCompare(b.company || "", "ja"));
+    } else {
+      list.sort((a, b) => a.createdAt - b.createdAt);
+    }
+
+    return list;
+  }
+
+  // リスト描画
+  function renderList() {
+    const listEl = document.getElementById("list");
+    listEl.innerHTML = "";
+
+    const list = getFilteredSortedContacts();
+    list.forEach(c => {
+      const div = document.createElement("div");
+      div.className = "contact-card";
+
+      const img = document.createElement("img");
+      img.className = "contact-img";
+      img.src = c.photoUrl;
+      div.appendChild(img);
+
+      const fields = document.createElement("div");
+      fields.className = "contact-fields";
+
+      fields.innerHTML = `
+        <label class="small">
+          <input type="checkbox" ${c.selected ? "checked" : ""} onchange="toggleSelect('${c.id}', this.checked)">
+          一括vCard対象
+        </label><br>
+        名前:<br>
+        <input type="text" value="${escapeHtml(c.name)}" onchange="updateField('${c.id}','name',this.value)"><br>
+        会社:<br>
+        <input type="text" value="${escapeHtml(c.company)}" onchange="updateField('${c.id}','company',this.value)"><br>
+        TEL:<br>
+        <input type="tel" value="${escapeHtml(c.phone)}" onchange="updateField('${c.id}','phone',this.value)"><br>
+        Mail:<br>
+        <input type="email" value="${escapeHtml(c.email)}" onchange="updateField('${c.id}','email',this.value)"><br>
+        タグ（スペース区切り）:<br>
+        <input type="text" value="${escapeHtml((c.tags || []).join(' '))}" onchange="updateTags('${c.id}',this.value)"><br>
+        <button onclick="downloadVCardById('${c.id}')">この連絡先を vCard 出力</button>
+      `;
+
+      div.appendChild(fields);
+      listEl.appendChild(div);
+    });
+  }
+
+  function escapeHtml(str) {
+    return (str || "").replace(/[&<>"']/g, s => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[s]));
+  }
+
+  function findContact(id) {
+    return contacts.find(c => c.id === id);
+  }
+
+  function updateField(id, key, value) {
+    const c = findContact(id);
+    if (!c) return;
+    c[key] = value;
+  }
+
+  function updateTags(id, value) {
+    const c = findContact(id);
+    if (!c) return;
+    c.tags = value.split(/\s+/).filter(t => t);
+  }
+
+  function toggleSelect(id, checked) {
+    const c = findContact(id);
+    if (!c) return;
+    c.selected = checked;
+  }
+
+  // vCard 出力（1件）
+  function downloadVCardById(id) {
+    const c = findContact(id);
+    if (!c) return;
+    downloadVCard(c);
+  }
+
+  function buildVCard(contact) {
+    const name = contact.name || "";
+    const phone = contact.phone || "";
+    const email = contact.email || "";
+    const company = contact.company || "";
+    const tags = (contact.tags || []).join(" ");
+
+    let vcard = "";
+    vcard += "BEGIN:VCARD\n";
+    vcard += "VERSION:3.0\n";
+    if (name) vcard += "FN:" + name + "\n";
+    if (company) vcard += "ORG:" + company + "\n";
+    if (phone) vcard += "TEL;TYPE=CELL:" + phone + "\n";
+    if (email) vcard += "EMAIL:" + email + "\n";
+    if (tags) vcard += "NOTE:" + tags + "\n";
+    vcard += "END:VCARD\n";
+    return vcard;
+  }
+
+  function downloadVCard(contact) {
+    const vcard = buildVCard(contact);
+    const blob = new Blob([vcard], { type: "text/vcard" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (contact.name || "contact") + ".vcf";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // CSV 出力
+  function downloadCSV() {
+    let csv = "名前,会社,電話,メール,タグ\n";
+    contacts.forEach(c => {
+      const row = [
+        c.name || "",
+        c.company || "",
+        c.phone || "",
+        c.email || "",
+        (c.tags || []).join(" ")
+      ].map(v => `"${(v || "").replace(/"/g, '""')}"`).join(",");
+      csv += row + "\n";
+    });
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "contacts.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Excel 出力（SheetJS）
+  function downloadXlsx() {
+    const data = contacts.map(c => ({
+      名前: c.name || "",
+      会社: c.company || "",
+      電話: c.phone || "",
+      メール: c.email || "",
+      タグ: (c.tags || []).join(" ")
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Contacts");
+    XLSX.writeFile(wb, "contacts.xlsx");
+  }
+
+  // vCard ZIP 一括
+  async function downloadVCardZip() {
+    const selected = contacts.filter(c => c.selected);
+    if (selected.length === 0) {
+      alert("一括出力する連絡先にチェックを付けてください。");
+      return;
+    }
+    const zip = new JSZip();
+    selected.forEach(c => {
+      const vcard = buildVCard(c);
+      const filename = (c.name || "contact") + ".vcf";
+      zip.file(filename, vcard);
+    });
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "contacts_vcards.zip";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+</script>
+</body>
+</html>
