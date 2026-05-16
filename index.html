@@ -14,11 +14,33 @@
     .section { border: 1px solid #ccc; padding: 8px; margin-bottom: 10px; }
     .label { font-weight: bold; }
     .contact-card { border: 1px solid #ddd; padding: 6px; margin-bottom: 6px; display: flex; gap: 8px; }
-    .contact-img { width: 120px; height: auto; object-fit: cover; border: 1px solid #ccc; }
+    .contact-img { width: 120px; height: auto; object-fit: cover; border: 1px solid #ccc; cursor: pointer; }
     .contact-fields { flex: 1; font-size: 13px; }
     input[type="text"], input[type="tel"], input[type="email"] { width: 100%; box-sizing: border-box; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .small { font-size: 12px; color: #555; }
+    /* 拡大表示用オーバーレイ */
+    #imageOverlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+    }
+    #imageOverlay img {
+      max-width: 95vw; max-height: 95vh; box-shadow: 0 0 10px #000; background: #fff;
+    }
+    /* トリミング用 */
+    #cropContainer {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: none; align-items: center; justify-content: center; z-index: 9000;
+    }
+    #cropInner {
+      background: #fff; padding: 8px; max-width: 100vw; max-height: 100vh;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    #cropCanvas {
+      touch-action: none;
+      max-width: 95vw; max-height: 70vh; border: 1px solid #ccc;
+    }
+    #cropInfo { font-size: 11px; color: #555; }
   </style>
 </head>
 <body>
@@ -27,18 +49,38 @@
 <div class="section">
   <div class="label">Vision APIキー</div>
   <input id="apiKeyInput" type="password" placeholder="AIza..." style="width: 100%; box-sizing: border-box;">
-  <button onclick="saveApiKey()">APIキー保存</button>
-  <span id="apiKeyStatus" class="small"></span>
+  <div class="toolbar">
+    <button onclick="saveApiKey()">APIキー保存</button>
+    <label class="small">
+      <input type="checkbox" id="toggleApiKeyView" onchange="toggleApiKeyVisible()"> 表示
+    </label>
+    <span id="apiKeyStatus" class="small"></span>
+  </div>
   <div class="small">
     ※キーはこの端末の localStorage にのみ保存され、GitHub などには保存されません。
   </div>
 </div>
 
 <div class="section">
-  <div class="label">名刺の撮影 / 画像選択</div>
+  <div class="label">名刺の撮影 / 画像選択（OCR前にトリミング）</div>
   <input id="photoInput" type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)">
   <div class="small">
-    ※名刺が画面いっぱいになるように撮影してください。内部で約 1075×650px にリサイズしてOCRします。
+    ※名刺が画面いっぱいになるように撮影してください。内部で約 1075×650px にリサイズしてOCRします。<br>
+    ※選択後、トリミング画面が開きます。名刺部分をドラッグで囲んでください。
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">バックアップ・復元</div>
+  <div class="toolbar">
+    <button onclick="backupContacts()">連絡先バックアップ（JSON）</button>
+    <label class="small">
+      復元ファイル:
+      <input id="restoreInput" type="file" accept="application/json" onchange="restoreContacts(event)">
+    </label>
+  </div>
+  <div class="small">
+    ※バックアップはJSON形式です。別端末に移すときはこのファイルを保存しておいてください。
   </div>
 </div>
 
@@ -61,24 +103,52 @@
 
 <div class="section">
   <div class="label">連絡先リスト</div>
-  <div class="small">※チェックを付けたものが ZIP 一括 vCard の対象になります。</div>
+  <div class="small">
+    ※チェックを付けたものが ZIP 一括 vCard の対象になります。<br>
+    ※写真をタップすると瞬時に拡大表示されます。<br>
+    ※「削除」ボタンで名刺を削除できます。
+  </div>
   <div id="list"></div>
 </div>
 
 <!-- リサイズ用キャンバス（非表示） -->
 <canvas id="resizeCanvas" style="display:none;"></canvas>
 
+<!-- 拡大表示オーバーレイ -->
+<div id="imageOverlay" onclick="hideImageOverlay()">
+  <img id="overlayImage" src="">
+</div>
+
+<!-- トリミングUI -->
+<div id="cropContainer">
+  <div id="cropInner">
+    <canvas id="cropCanvas"></canvas>
+    <div id="cropInfo">ドラッグで名刺部分を囲んでください。完了したら「この範囲でOCR」を押してください。</div>
+    <div class="toolbar">
+      <button onclick="confirmCrop()">この範囲でOCR</button>
+      <button onclick="cancelCrop()">キャンセル</button>
+    </div>
+  </div>
+</div>
+
 <script>
-  const contacts = []; // {id, name, phone, email, company, tags[], photoUrl, createdAt}
+  const contacts = []; // {id, name, phone, email, company, tags[], photoUrl, createdAt, selected}
   let searchKeyword = "";
   let sortKey = "created";
 
-  // 初期化
+  // トリミング用
+  let cropImage = null;
+  let cropCanvas, cropCtx;
+  let cropStart = null;
+  let cropRect = null;
+
   window.addEventListener("load", () => {
     const key = localStorage.getItem("vision_api_key");
     if (key) {
-      document.getElementById("apiKeyStatus").textContent = "保存済み";
+      document.getElementById("apiKeyStatus").textContent = "設定済み（******）";
     }
+    cropCanvas = document.getElementById("cropCanvas");
+    cropCtx = cropCanvas.getContext("2d");
   });
 
   function saveApiKey() {
@@ -88,26 +158,139 @@
       return;
     }
     localStorage.setItem("vision_api_key", key);
-    document.getElementById("apiKeyStatus").textContent = "保存済み";
+    document.getElementById("apiKeyStatus").textContent = "設定済み（******）";
     document.getElementById("apiKeyInput").value = "";
   }
 
-  // 画像選択
-  async function onPhotoSelected(e) {
+  function toggleApiKeyVisible() {
+    const cb = document.getElementById("toggleApiKeyView");
+    const input = document.getElementById("apiKeyInput");
+    input.type = cb.checked ? "text" : "password";
+  }
+
+  // 画像選択 → トリミングUIへ
+  function onPhotoSelected(e) {
     const file = e.target.files[0];
     if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      cropImage = new Image();
+      cropImage.onload = () => {
+        openCropUI(cropImage);
+      };
+      cropImage.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
 
-    const resized = await resizeImageToCanvas(file, 1075, 650);
-    const base64 = resized.base64;
-    const photoUrl = resized.url;
+  function openCropUI(img) {
+    const maxW = window.innerWidth * 0.95;
+    const maxH = window.innerHeight * 0.7;
+    const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+    cropCanvas.width = img.width * scale;
+    cropCanvas.height = img.height * scale;
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.drawImage(img, 0, 0, cropCanvas.width, cropCanvas.height);
+    cropStart = null;
+    cropRect = null;
+    setupCropEvents();
+    document.getElementById("cropContainer").style.display = "flex";
+  }
 
-    // OCR
+  function setupCropEvents() {
+    const c = cropCanvas;
+    c.onpointerdown = e => {
+      const rect = c.getBoundingClientRect();
+      cropStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      cropRect = null;
+      redrawCrop();
+      c.setPointerCapture(e.pointerId);
+    };
+    c.onpointermove = e => {
+      if (!cropStart) return;
+      const rect = c.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      cropRect = {
+        x: Math.min(cropStart.x, x),
+        y: Math.min(cropStart.y, y),
+        w: Math.abs(x - cropStart.x),
+        h: Math.abs(y - cropStart.y)
+      };
+      redrawCrop();
+    };
+    c.onpointerup = e => {
+      if (cropStart) {
+        c.releasePointerCapture(e.pointerId);
+      }
+      cropStart = null;
+    };
+  }
+
+  function redrawCrop() {
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.drawImage(cropImage, 0, 0, cropCanvas.width, cropCanvas.height);
+    if (cropRect && cropRect.w > 5 && cropRect.h > 5) {
+      cropCtx.strokeStyle = "red";
+      cropCtx.lineWidth = 2;
+      cropCtx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+      cropCtx.fillStyle = "rgba(255,0,0,0.15)";
+      cropCtx.fillRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+    }
+  }
+
+  function cancelCrop() {
+    document.getElementById("cropContainer").style.display = "none";
+    cropImage = null;
+    cropRect = null;
+  }
+
+  async function confirmCrop() {
+    if (!cropImage || !cropRect || cropRect.w < 10 || cropRect.h < 10) {
+      alert("トリミング範囲をドラッグで指定してください。");
+      return;
+    }
+    // 選択範囲を 1075x650 にリサイズ
+    const targetW = 1075;
+    const targetH = 650;
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = targetW;
+    tmpCanvas.height = targetH;
+    const tmpCtx = tmpCanvas.getContext("2d");
+    tmpCtx.fillStyle = "#ffffff";
+    tmpCtx.fillRect(0, 0, targetW, targetH);
+
+    const scaleX = cropImage.width / cropCanvas.width;
+    const scaleY = cropImage.height / cropCanvas.height;
+    const sx = cropRect.x * scaleX;
+    const sy = cropRect.y * scaleY;
+    const sw = cropRect.w * scaleX;
+    const sh = cropRect.h * scaleY;
+
+    const scale = Math.min(targetW / sw, targetH / sh);
+    const dw = sw * scale;
+    const dh = sh * scale;
+    const dx = (targetW - dw) / 2;
+    const dy = (targetH - dh) / 2;
+
+    tmpCtx.drawImage(cropImage, sx, sy, sw, sh, dx, dy, dw, dh);
+
+    const dataUrl = tmpCanvas.toDataURL("image/jpeg", 0.9);
+    const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+    const photoUrl = dataUrl;
+
+    document.getElementById("cropContainer").style.display = "none";
+    cropImage = null;
+    cropRect = null;
+
     let text = "";
     try {
       text = await callVisionAPI(base64);
     } catch (err) {
       console.error(err);
       alert("Vision API 呼び出しでエラーが発生しました。APIキーやネットワークを確認してください。");
+      return;
     }
 
     const parsed = parseOcrText(text);
@@ -124,50 +307,13 @@
     };
     contacts.push(contact);
     renderList();
-    e.target.value = "";
   }
 
-  // 画像を 1075x650 にリサイズ
-  function resizeImageToCanvas(file, targetW, targetH) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.getElementById("resizeCanvas");
-          canvas.width = targetW;
-          canvas.height = targetH;
-          const ctx = canvas.getContext("2d");
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, targetW, targetH);
-
-          // アスペクト比を保って中央に配置
-          const scale = Math.min(targetW / img.width, targetH / img.height);
-          const w = img.width * scale;
-          const h = img.height * scale;
-          const x = (targetW - w) / 2;
-          const y = (targetH - h) / 2;
-          ctx.drawImage(img, x, y, w, h);
-
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-          resolve({ base64, url: dataUrl });
-        };
-        img.onerror = reject;
-        img.src = reader.result;
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  // Vision API 呼び出し
   async function callVisionAPI(base64Image) {
     const apiKey = localStorage.getItem("vision_api_key");
     if (!apiKey) {
       throw new Error("Vision APIキーが保存されていません。");
     }
-
     const body = {
       requests: [
         {
@@ -176,7 +322,6 @@
         }
       ]
     };
-
     const res = await fetch(
       "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey),
       {
@@ -185,19 +330,16 @@
         body: JSON.stringify(body)
       }
     );
-
     if (!res.ok) {
       const t = await res.text();
       console.error(t);
       throw new Error("Vision API エラー: " + res.status);
     }
-
     const data = await res.json();
     const text = data.responses?.[0]?.fullTextAnnotation?.text || "";
     return text;
   }
 
-  // OCR結果の簡易パース
   function parseOcrText(text) {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
     let phone = "";
@@ -217,11 +359,9 @@
       }
     }
 
-    // 会社名っぽい行（株式会社/有限会社/合同会社など）
     const companyLine = lines.find(l => /株式会社|有限会社|合同会社|Inc\.|Co\./i.test(l));
     if (companyLine) company = companyLine;
 
-    // 名前候補：電話・メール・会社以外の短めの行
     const nameCandidate = lines.find(l =>
       l !== companyLine &&
       !l.includes(phone) &&
@@ -233,7 +373,6 @@
     return { name, phone, email, company };
   }
 
-  // 検索・並び替え
   function onSearchChange() {
     searchKeyword = document.getElementById("searchInput").value.toLowerCase();
     renderList();
@@ -246,7 +385,6 @@
 
   function getFilteredSortedContacts() {
     let list = contacts.slice();
-
     if (searchKeyword) {
       list = list.filter(c => {
         const t = [
@@ -257,7 +395,6 @@
         return t.includes(searchKeyword);
       });
     }
-
     if (sortKey === "name") {
       list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
     } else if (sortKey === "company") {
@@ -265,15 +402,12 @@
     } else {
       list.sort((a, b) => a.createdAt - b.createdAt);
     }
-
     return list;
   }
 
-  // リスト描画
   function renderList() {
     const listEl = document.getElementById("list");
     listEl.innerHTML = "";
-
     const list = getFilteredSortedContacts();
     list.forEach(c => {
       const div = document.createElement("div");
@@ -282,11 +416,11 @@
       const img = document.createElement("img");
       img.className = "contact-img";
       img.src = c.photoUrl;
+      img.onclick = () => showImageOverlay(c.photoUrl);
       div.appendChild(img);
 
       const fields = document.createElement("div");
       fields.className = "contact-fields";
-
       fields.innerHTML = `
         <label class="small">
           <input type="checkbox" ${c.selected ? "checked" : ""} onchange="toggleSelect('${c.id}', this.checked)">
@@ -303,8 +437,8 @@
         タグ（スペース区切り）:<br>
         <input type="text" value="${escapeHtml((c.tags || []).join(' '))}" onchange="updateTags('${c.id}',this.value)"><br>
         <button onclick="downloadVCardById('${c.id}')">この連絡先を vCard 出力</button>
+        <button onclick="deleteContact('${c.id}')">削除</button>
       `;
-
       div.appendChild(fields);
       listEl.appendChild(div);
     });
@@ -338,7 +472,14 @@
     c.selected = checked;
   }
 
-  // vCard 出力（1件）
+  function deleteContact(id) {
+    const idx = contacts.findIndex(c => c.id === id);
+    if (idx === -1) return;
+    if (!confirm("この名刺を削除しますか？")) return;
+    contacts.splice(idx, 1);
+    renderList();
+  }
+
   function downloadVCardById(id) {
     const c = findContact(id);
     if (!c) return;
@@ -351,7 +492,6 @@
     const email = contact.email || "";
     const company = contact.company || "";
     const tags = (contact.tags || []).join(" ");
-
     let vcard = "";
     vcard += "BEGIN:VCARD\n";
     vcard += "VERSION:3.0\n";
@@ -375,7 +515,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // CSV 出力
   function downloadCSV() {
     let csv = "名前,会社,電話,メール,タグ\n";
     contacts.forEach(c => {
@@ -397,7 +536,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // Excel 出力（SheetJS）
   function downloadXlsx() {
     const data = contacts.map(c => ({
       名前: c.name || "",
@@ -412,7 +550,6 @@
     XLSX.writeFile(wb, "contacts.xlsx");
   }
 
-  // vCard ZIP 一括
   async function downloadVCardZip() {
     const selected = contacts.filter(c => c.selected);
     if (selected.length === 0) {
@@ -432,6 +569,65 @@
     a.download = "contacts_vcards.zip";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // 拡大表示
+  function showImageOverlay(src) {
+    const overlay = document.getElementById("imageOverlay");
+    const img = document.getElementById("overlayImage");
+    img.src = src;
+    overlay.style.display = "flex";
+  }
+
+  function hideImageOverlay() {
+    document.getElementById("imageOverlay").style.display = "none";
+    document.getElementById("overlayImage").src = "";
+  }
+
+  // バックアップ（JSON）
+  function backupContacts() {
+    const data = JSON.stringify(contacts, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "contacts_backup.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // 復元（JSON）
+  function restoreContacts(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!Array.isArray(data)) throw new Error("形式が不正です");
+        contacts.length = 0;
+        data.forEach(c => {
+          contacts.push({
+            id: c.id || (Date.now() + "_" + Math.random().toString(16).slice(2)),
+            name: c.name || "",
+            phone: c.phone || "",
+            email: c.email || "",
+            company: c.company || "",
+            tags: Array.isArray(c.tags) ? c.tags : [],
+            photoUrl: c.photoUrl || "",
+            createdAt: c.createdAt || Date.now(),
+            selected: !!c.selected
+          });
+        });
+        renderList();
+        alert("復元が完了しました。");
+      } catch (err) {
+        console.error(err);
+        alert("復元に失敗しました。ファイル形式を確認してください。");
+      }
+      e.target.value = "";
+    };
+    reader.readAsText(file, "utf-8");
   }
 </script>
 </body>
