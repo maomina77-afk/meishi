@@ -41,32 +41,41 @@
       max-width: 95vw; max-height: 70vh; border: 1px solid #ccc;
     }
     #cropInfo { font-size: 11px; color: #555; }
+    /* OCRテキスト選択 */
+    #ocrPicker {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: none; align-items: center; justify-content: center; z-index: 9500;
+    }
+    #ocrPickerInner {
+      background: #fff; padding: 8px; max-height: 80vh; width: 90vw; overflow: auto;
+      font-size: 13px;
+    }
+    .ocr-line { padding: 4px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .ocr-line:hover { background: #f0f0f0; }
   </style>
 </head>
 <body>
-<h1>名刺管理（HTML版）</h1>
+<h1>名刺管理（HTML版 / Android専用）</h1>
 
 <div class="section">
   <div class="label">Vision APIキー</div>
   <input id="apiKeyInput" type="password" placeholder="AIza..." style="width: 100%; box-sizing: border-box;">
   <div class="toolbar">
     <button onclick="saveApiKey()">APIキー保存</button>
-    <label class="small">
-      <input type="checkbox" id="toggleApiKeyView" onchange="toggleApiKeyVisible()"> 表示
-    </label>
     <span id="apiKeyStatus" class="small"></span>
   </div>
   <div class="small">
-    ※キーはこの端末の localStorage にのみ保存され、GitHub などには保存されません。
+    ※キーはこの端末の localStorage にのみ保存され、GitHub などには保存されません。<br>
+    ※表示ボタンはありません（常に非表示入力）。
   </div>
 </div>
 
 <div class="section">
-  <div class="label">名刺の撮影 / 画像選択（OCR前にトリミング）</div>
+  <div class="label">名刺の撮影 / 画像選択（OCR前にトリミング＋回転）</div>
   <input id="photoInput" type="file" accept="image/*" capture="environment" onchange="onPhotoSelected(event)">
   <div class="small">
     ※名刺が画面いっぱいになるように撮影してください。内部で約 1075×650px にリサイズしてOCRします。<br>
-    ※選択後、トリミング画面が開きます。名刺部分をドラッグで囲んでください。
+    ※選択後、トリミング画面が開きます。名刺部分をドラッグで囲み、必要なら回転してからOCRします。
   </div>
 </div>
 
@@ -80,7 +89,8 @@
     </label>
   </div>
   <div class="small">
-    ※バックアップはJSON形式です。別端末に移すときはこのファイルを保存しておいてください。
+    ※バックアップはJSON形式です。別端末に移すときはこのファイルを保存しておいてください。<br>
+    ※通常の更新（リロード）では、localStorage から自動復元されるためデータは消えません。
   </div>
 </div>
 
@@ -106,7 +116,8 @@
   <div class="small">
     ※チェックを付けたものが ZIP 一括 vCard の対象になります。<br>
     ※写真をタップすると瞬時に拡大表示されます。<br>
-    ※「削除」ボタンで名刺を削除できます。
+    ※「削除」ボタンで名刺を削除できます。<br>
+    ※各入力欄をタップすると、OCRテキスト一覧から取り込みたい行を選べます。
   </div>
   <div id="list"></div>
 </div>
@@ -123,32 +134,85 @@
 <div id="cropContainer">
   <div id="cropInner">
     <canvas id="cropCanvas"></canvas>
-    <div id="cropInfo">ドラッグで名刺部分を囲んでください。完了したら「この範囲でOCR」を押してください。</div>
+    <div id="cropInfo">
+      ドラッグで名刺部分を囲んでください。必要なら回転してから「この範囲でOCR」を押してください。
+    </div>
     <div class="toolbar">
+      <button onclick="rotateCrop(-90)">左回転</button>
+      <button onclick="rotateCrop(90)">右回転</button>
       <button onclick="confirmCrop()">この範囲でOCR</button>
       <button onclick="cancelCrop()">キャンセル</button>
     </div>
   </div>
 </div>
 
+<!-- OCRテキスト選択UI -->
+<div id="ocrPicker">
+  <div id="ocrPickerInner">
+    <div class="label">OCRテキストから選択</div>
+    <div id="ocrPickerContent"></div>
+    <button onclick="closeOcrPicker()">閉じる</button>
+  </div>
+</div>
+
 <script>
-  const contacts = []; // {id, name, phone, email, company, tags[], photoUrl, createdAt, selected}
+  // ===== グローバル状態 =====
+  let contacts = []; // {id,name,phone,email,company,zip,address,tags[],photoUrl,ocrText,createdAt,selected}
   let searchKeyword = "";
   let sortKey = "created";
 
   // トリミング用
-  let cropImage = null;
+  let cropImage = null;        // 元画像 Image
   let cropCanvas, cropCtx;
+  let baseCanvas, baseCtx;     // 回転後のベース画像
+  let baseScale = 1;           // baseCanvas → cropCanvas のスケール
   let cropStart = null;
   let cropRect = null;
+  let cropRotation = 0;        // 0,90,180,270
 
+  // OCR Picker 用
+  let ocrPickerTargetId = null;
+  let ocrPickerTargetField = null;
+
+  // ===== 起動時処理 =====
   window.addEventListener("load", () => {
     const key = localStorage.getItem("vision_api_key");
     if (key) {
       document.getElementById("apiKeyStatus").textContent = "設定済み（******）";
     }
+
     cropCanvas = document.getElementById("cropCanvas");
     cropCtx = cropCanvas.getContext("2d");
+
+    baseCanvas = document.createElement("canvas");
+    baseCtx = baseCanvas.getContext("2d");
+
+    // contacts の自動復元
+    const saved = localStorage.getItem("contacts");
+    if (saved) {
+      try {
+        const data = JSON.parse(saved);
+        if (Array.isArray(data)) {
+          contacts = data.map(c => ({
+            id: c.id || (Date.now() + "_" + Math.random().toString(16).slice(2)),
+            name: c.name || "",
+            phone: c.phone || "",
+            email: c.email || "",
+            company: c.company || "",
+            zip: c.zip || "",
+            address: c.address || "",
+            tags: Array.isArray(c.tags) ? c.tags : [],
+            photoUrl: c.photoUrl || "",
+            ocrText: c.ocrText || "",
+            createdAt: c.createdAt || Date.now(),
+            selected: !!c.selected
+          }));
+        }
+      } catch (e) {
+        console.error("contacts復元エラー", e);
+      }
+    }
+    renderList();
   });
 
   function saveApiKey() {
@@ -162,12 +226,15 @@
     document.getElementById("apiKeyInput").value = "";
   }
 
-  function toggleApiKeyVisible() {
-    const cb = document.getElementById("toggleApiKeyView");
-    const input = document.getElementById("apiKeyInput");
-    input.type = cb.checked ? "text" : "password";
+  function saveContacts() {
+    try {
+      localStorage.setItem("contacts", JSON.stringify(contacts));
+    } catch (e) {
+      console.error("contacts保存エラー", e);
+    }
   }
 
+  // ===== ここまでが Part 1 =====
   // 画像選択 → トリミングUIへ
   function onPhotoSelected(e) {
     const file = e.target.files[0];
@@ -176,7 +243,9 @@
     reader.onload = () => {
       cropImage = new Image();
       cropImage.onload = () => {
-        openCropUI(cropImage);
+        cropRotation = 0;
+        prepareBaseCanvas();
+        openCropUI();
       };
       cropImage.src = reader.result;
     };
@@ -184,18 +253,50 @@
     e.target.value = "";
   }
 
-  function openCropUI(img) {
+  // 回転後のベース画像を作成
+  function prepareBaseCanvas() {
+    const img = cropImage;
+    const rad = cropRotation * Math.PI / 180;
+    let bw = img.width;
+    let bh = img.height;
+    if (cropRotation % 180 !== 0) {
+      bw = img.height;
+      bh = img.width;
+    }
+    baseCanvas.width = bw;
+    baseCanvas.height = bh;
+    baseCtx.setTransform(1,0,0,1,0,0);
+    baseCtx.clearRect(0,0,bw,bh);
+    baseCtx.translate(bw/2, bh/2);
+    baseCtx.rotate(rad);
+    baseCtx.drawImage(img, -img.width/2, -img.height/2);
+    baseCtx.setTransform(1,0,0,1,0,0);
+  }
+
+  function openCropUI() {
     const maxW = window.innerWidth * 0.95;
     const maxH = window.innerHeight * 0.7;
-    const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-    cropCanvas.width = img.width * scale;
-    cropCanvas.height = img.height * scale;
-    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
-    cropCtx.drawImage(img, 0, 0, cropCanvas.width, cropCanvas.height);
+    const bw = baseCanvas.width;
+    const bh = baseCanvas.height;
+    const scale = Math.min(maxW / bw, maxH / bh, 1);
+    cropCanvas.width = bw * scale;
+    cropCanvas.height = bh * scale;
+    baseScale = scale;
+
+    cropCtx.clearRect(0,0,cropCanvas.width,cropCanvas.height);
+    cropCtx.drawImage(baseCanvas, 0, 0, bw, bh, 0, 0, cropCanvas.width, cropCanvas.height);
+
     cropStart = null;
     cropRect = null;
     setupCropEvents();
     document.getElementById("cropContainer").style.display = "flex";
+  }
+
+  function rotateCrop(delta) {
+    if (!cropImage) return;
+    cropRotation = (cropRotation + delta + 360) % 360;
+    prepareBaseCanvas();
+    openCropUI();
   }
 
   function setupCropEvents() {
@@ -221,16 +322,14 @@
       redrawCrop();
     };
     c.onpointerup = e => {
-      if (cropStart) {
-        c.releasePointerCapture(e.pointerId);
-      }
+      if (cropStart) c.releasePointerCapture(e.pointerId);
       cropStart = null;
     };
   }
 
   function redrawCrop() {
-    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
-    cropCtx.drawImage(cropImage, 0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.clearRect(0,0,cropCanvas.width,cropCanvas.height);
+    cropCtx.drawImage(baseCanvas, 0, 0, baseCanvas.width, baseCanvas.height, 0, 0, cropCanvas.width, cropCanvas.height);
     if (cropRect && cropRect.w > 5 && cropRect.h > 5) {
       cropCtx.strokeStyle = "red";
       cropCtx.lineWidth = 2;
@@ -251,7 +350,6 @@
       alert("トリミング範囲をドラッグで指定してください。");
       return;
     }
-    // 選択範囲を 1075x650 にリサイズ
     const targetW = 1075;
     const targetH = 650;
     const tmpCanvas = document.createElement("canvas");
@@ -259,14 +357,13 @@
     tmpCanvas.height = targetH;
     const tmpCtx = tmpCanvas.getContext("2d");
     tmpCtx.fillStyle = "#ffffff";
-    tmpCtx.fillRect(0, 0, targetW, targetH);
+    tmpCtx.fillRect(0,0,targetW,targetH);
 
-    const scaleX = cropImage.width / cropCanvas.width;
-    const scaleY = cropImage.height / cropCanvas.height;
-    const sx = cropRect.x * scaleX;
-    const sy = cropRect.y * scaleY;
-    const sw = cropRect.w * scaleX;
-    const sh = cropRect.h * scaleY;
+    // cropRect → baseCanvas 座標へ
+    const sx = cropRect.x / baseScale;
+    const sy = cropRect.y / baseScale;
+    const sw = cropRect.w / baseScale;
+    const sh = cropRect.h / baseScale;
 
     const scale = Math.min(targetW / sw, targetH / sh);
     const dw = sw * scale;
@@ -274,7 +371,7 @@
     const dx = (targetW - dw) / 2;
     const dy = (targetH - dh) / 2;
 
-    tmpCtx.drawImage(cropImage, sx, sy, sw, sh, dx, dy, dw, dh);
+    tmpCtx.drawImage(baseCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
 
     const dataUrl = tmpCanvas.toDataURL("image/jpeg", 0.9);
     const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
@@ -300,12 +397,16 @@
       phone: parsed.phone || "",
       email: parsed.email || "",
       company: parsed.company || "",
+      zip: parsed.zip || "",
+      address: parsed.address || "",
       tags: [],
       photoUrl,
+      ocrText: text || "",
       createdAt: Date.now(),
       selected: false
     };
     contacts.push(contact);
+    saveContacts();
     renderList();
   }
 
@@ -346,9 +447,13 @@
     let email = "";
     let company = "";
     let name = "";
+    let zip = "";
+    let address = "";
 
     const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
     const phoneRegex = /0\d{1,4}-\d{1,4}-\d{3,4}|0\d{9,10}/;
+    const zipRegex = /〒?\s?(\d{3}-\d{4})/;
+    const addressRegex = /(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県).+/;
 
     for (const line of lines) {
       if (!email && emailRegex.test(line)) {
@@ -356,6 +461,12 @@
       }
       if (!phone && phoneRegex.test(line)) {
         phone = line.match(phoneRegex)[0];
+      }
+      if (!zip && zipRegex.test(line)) {
+        zip = line.match(zipRegex)[1];
+      }
+      if (!address && addressRegex.test(line)) {
+        address = line.match(addressRegex)[0];
       }
     }
 
@@ -366,11 +477,12 @@
       l !== companyLine &&
       !l.includes(phone) &&
       !l.includes(email) &&
+      !l.includes(zip) &&
       l.length >= 2 && l.length <= 15
     );
     if (nameCandidate) name = nameCandidate;
 
-    return { name, phone, email, company };
+    return { name, phone, email, company, zip, address };
   }
 
   function onSearchChange() {
@@ -390,6 +502,8 @@
         const t = [
           c.name || "",
           c.company || "",
+          c.zip || "",
+          c.address || "",
           (c.tags || []).join(" ")
         ].join(" ").toLowerCase();
         return t.includes(searchKeyword);
@@ -427,15 +541,32 @@
           一括vCard対象
         </label><br>
         名前:<br>
-        <input type="text" value="${escapeHtml(c.name)}" onchange="updateField('${c.id}','name',this.value)"><br>
+        <input type="text" value="${escapeHtml(c.name)}"
+          onclick="openOcrPicker('name','${c.id}')"
+          onchange="updateField('${c.id}','name',this.value)"><br>
         会社:<br>
-        <input type="text" value="${escapeHtml(c.company)}" onchange="updateField('${c.id}','company',this.value)"><br>
+        <input type="text" value="${escapeHtml(c.company)}"
+          onclick="openOcrPicker('company','${c.id}')"
+          onchange="updateField('${c.id}','company',this.value)"><br>
         TEL:<br>
-        <input type="tel" value="${escapeHtml(c.phone)}" onchange="updateField('${c.id}','phone',this.value)"><br>
+        <input type="tel" value="${escapeHtml(c.phone)}"
+          onclick="openOcrPicker('phone','${c.id}')"
+          onchange="updateField('${c.id}','phone',this.value)"><br>
         Mail:<br>
-        <input type="email" value="${escapeHtml(c.email)}" onchange="updateField('${c.id}','email',this.value)"><br>
+        <input type="email" value="${escapeHtml(c.email)}"
+          onclick="openOcrPicker('email','${c.id}')"
+          onchange="updateField('${c.id}','email',this.value)"><br>
+        郵便番号:<br>
+        <input type="text" value="${escapeHtml(c.zip)}"
+          onclick="openOcrPicker('zip','${c.id}')"
+          onchange="updateField('${c.id}','zip',this.value)"><br>
+        住所:<br>
+        <input type="text" value="${escapeHtml(c.address)}"
+          onclick="openOcrPicker('address','${c.id}')"
+          onchange="updateField('${c.id}','address',this.value)"><br>
         タグ（スペース区切り）:<br>
-        <input type="text" value="${escapeHtml((c.tags || []).join(' '))}" onchange="updateTags('${c.id}',this.value)"><br>
+        <input type="text" value="${escapeHtml((c.tags || []).join(' '))}"
+          onchange="updateTags('${c.id}',this.value)"><br>
         <button onclick="downloadVCardById('${c.id}')">この連絡先を vCard 出力</button>
         <button onclick="deleteContact('${c.id}')">削除</button>
       `;
@@ -458,18 +589,21 @@
     const c = findContact(id);
     if (!c) return;
     c[key] = value;
+    saveContacts();
   }
 
   function updateTags(id, value) {
     const c = findContact(id);
     if (!c) return;
     c.tags = value.split(/\s+/).filter(t => t);
+    saveContacts();
   }
 
   function toggleSelect(id, checked) {
     const c = findContact(id);
     if (!c) return;
     c.selected = checked;
+    saveContacts();
   }
 
   function deleteContact(id) {
@@ -477,6 +611,7 @@
     if (idx === -1) return;
     if (!confirm("この名刺を削除しますか？")) return;
     contacts.splice(idx, 1);
+    saveContacts();
     renderList();
   }
 
@@ -486,12 +621,69 @@
     downloadVCard(c);
   }
 
+  // 画像拡大表示
+  function showImageOverlay(src) {
+    const overlay = document.getElementById("imageOverlay");
+    const img = document.getElementById("overlayImage");
+    img.src = src;
+    overlay.style.display = "flex";
+  }
+
+  function hideImageOverlay() {
+    document.getElementById("imageOverlay").style.display = "none";
+    document.getElementById("overlayImage").src = "";
+  }
+
+  // OCR Picker
+  function openOcrPicker(field, id) {
+    const c = findContact(id);
+    if (!c || !c.ocrText) {
+      alert("この名刺にはOCRテキストがありません。");
+      return;
+    }
+    ocrPickerTargetId = id;
+    ocrPickerTargetField = field;
+
+    const lines = c.ocrText.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+    const content = document.getElementById("ocrPickerContent");
+    content.innerHTML = "";
+    lines.forEach(line => {
+      const div = document.createElement("div");
+      div.className = "ocr-line";
+      div.textContent = line;
+      div.onclick = () => selectOcrText(line);
+      content.appendChild(div);
+    });
+    document.getElementById("ocrPicker").style.display = "flex";
+  }
+
+  function selectOcrText(value) {
+    if (!ocrPickerTargetId || !ocrPickerTargetField) return;
+    const c = findContact(ocrPickerTargetId);
+    if (!c) return;
+    c[ocrPickerTargetField] = value;
+    saveContacts();
+    renderList();
+    closeOcrPicker();
+  }
+
+  function closeOcrPicker() {
+    document.getElementById("ocrPicker").style.display = "none";
+    ocrPickerTargetId = null;
+    ocrPickerTargetField = null;
+  }
+
+  // ===== ここまでが Part 2 =====
+  // vCard生成
   function buildVCard(contact) {
     const name = contact.name || "";
     const phone = contact.phone || "";
     const email = contact.email || "";
     const company = contact.company || "";
     const tags = (contact.tags || []).join(" ");
+    const zip = contact.zip || "";
+    const address = contact.address || "";
+
     let vcard = "";
     vcard += "BEGIN:VCARD\n";
     vcard += "VERSION:3.0\n";
@@ -499,6 +691,10 @@
     if (company) vcard += "ORG:" + company + "\n";
     if (phone) vcard += "TEL;TYPE=CELL:" + phone + "\n";
     if (email) vcard += "EMAIL:" + email + "\n";
+    if (zip || address) {
+      // ADR;TYPE=HOME:;;住所;;;郵便番号;
+      vcard += "ADR;TYPE=HOME:;;" + (address || "") + ";;;" + (zip || "") + ";\n";
+    }
     if (tags) vcard += "NOTE:" + tags + "\n";
     vcard += "END:VCARD\n";
     return vcard;
@@ -515,14 +711,17 @@
     URL.revokeObjectURL(url);
   }
 
+  // CSV 出力
   function downloadCSV() {
-    let csv = "名前,会社,電話,メール,タグ\n";
+    let csv = "名前,会社,電話,メール,郵便番号,住所,タグ\n";
     contacts.forEach(c => {
       const row = [
         c.name || "",
         c.company || "",
         c.phone || "",
         c.email || "",
+        c.zip || "",
+        c.address || "",
         (c.tags || []).join(" ")
       ].map(v => `"${(v || "").replace(/"/g, '""')}"`).join(",");
       csv += row + "\n";
@@ -536,12 +735,15 @@
     URL.revokeObjectURL(url);
   }
 
+  // Excel 出力（SheetJS）
   function downloadXlsx() {
     const data = contacts.map(c => ({
       名前: c.name || "",
       会社: c.company || "",
       電話: c.phone || "",
       メール: c.email || "",
+      郵便番号: c.zip || "",
+      住所: c.address || "",
       タグ: (c.tags || []).join(" ")
     }));
     const ws = XLSX.utils.json_to_sheet(data);
@@ -550,6 +752,7 @@
     XLSX.writeFile(wb, "contacts.xlsx");
   }
 
+  // vCard ZIP 一括
   async function downloadVCardZip() {
     const selected = contacts.filter(c => c.selected);
     if (selected.length === 0) {
@@ -569,19 +772,6 @@
     a.download = "contacts_vcards.zip";
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  // 拡大表示
-  function showImageOverlay(src) {
-    const overlay = document.getElementById("imageOverlay");
-    const img = document.getElementById("overlayImage");
-    img.src = src;
-    overlay.style.display = "flex";
-  }
-
-  function hideImageOverlay() {
-    document.getElementById("imageOverlay").style.display = "none";
-    document.getElementById("overlayImage").src = "";
   }
 
   // バックアップ（JSON）
@@ -605,20 +795,21 @@
       try {
         const data = JSON.parse(reader.result);
         if (!Array.isArray(data)) throw new Error("形式が不正です");
-        contacts.length = 0;
-        data.forEach(c => {
-          contacts.push({
-            id: c.id || (Date.now() + "_" + Math.random().toString(16).slice(2)),
-            name: c.name || "",
-            phone: c.phone || "",
-            email: c.email || "",
-            company: c.company || "",
-            tags: Array.isArray(c.tags) ? c.tags : [],
-            photoUrl: c.photoUrl || "",
-            createdAt: c.createdAt || Date.now(),
-            selected: !!c.selected
-          });
-        });
+        contacts = data.map(c => ({
+          id: c.id || (Date.now() + "_" + Math.random().toString(16).slice(2)),
+          name: c.name || "",
+          phone: c.phone || "",
+          email: c.email || "",
+          company: c.company || "",
+          zip: c.zip || "",
+          address: c.address || "",
+          tags: Array.isArray(c.tags) ? c.tags : [],
+          photoUrl: c.photoUrl || "",
+          ocrText: c.ocrText || "",
+          createdAt: c.createdAt || Date.now(),
+          selected: !!c.selected
+        }));
+        saveContacts();
         renderList();
         alert("復元が完了しました。");
       } catch (err) {
