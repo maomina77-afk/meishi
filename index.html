@@ -13,13 +13,26 @@
     h1 { font-size: 20px; margin-bottom: 8px; }
     .section { border: 1px solid #ccc; padding: 8px; margin-bottom: 10px; }
     .label { font-weight: bold; }
-    .contact-card { border: 1px solid #ddd; padding: 6px; margin-bottom: 6px; display: flex; gap: 8px; }
-    .contact-img { width: 120px; height: auto; object-fit: cover; border: 1px solid #ccc; cursor: pointer; }
-    .contact-fields { flex: 1; font-size: 13px; }
+    .contact-card { border: 1px solid #ddd; padding: 6px; margin-bottom: 6px; }
+    .contact-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .field-full { grid-column: 1 / 3; }
+    .contact-photo-wide {
+      grid-column: 1 / 3;
+      width: 100%;
+      height: auto;
+      object-fit: cover;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      margin-top: 4px;
+    }
     input[type="text"], input[type="tel"], input[type="email"] { width: 100%; box-sizing: border-box; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .small { font-size: 12px; color: #555; }
-    /* 拡大表示用オーバーレイ */
     #imageOverlay {
       position: fixed; inset: 0; background: rgba(0,0,0,0.7);
       display: none; align-items: center; justify-content: center; z-index: 9999;
@@ -27,7 +40,6 @@
     #imageOverlay img {
       max-width: 95vw; max-height: 95vh; box-shadow: 0 0 10px #000; background: #fff;
     }
-    /* トリミング用 */
     #cropContainer {
       position: fixed; inset: 0; background: rgba(0,0,0,0.7);
       display: none; align-items: center; justify-content: center; z-index: 9000;
@@ -41,7 +53,6 @@
       max-width: 95vw; max-height: 70vh; border: 1px solid #ccc;
     }
     #cropInfo { font-size: 11px; color: #555; }
-    /* OCRテキスト選択 */
     #ocrPicker {
       position: fixed; inset: 0; background: rgba(0,0,0,0.7);
       display: none; align-items: center; justify-content: center; z-index: 9500;
@@ -117,20 +128,18 @@
     ※チェックを付けたものが ZIP 一括 vCard の対象になります。<br>
     ※写真をタップすると瞬時に拡大表示されます。<br>
     ※「削除」ボタンで名刺を削除できます。<br>
-    ※各入力欄をタップすると、OCRテキスト一覧から取り込みたい行を選べます。
+    ※各入力欄をタップすると、OCRテキスト一覧から取り込みたい行を選べます。<br>
+    ※電話欄長押しで電話アプリ、メール欄長押しでメール作成画面が開きます。
   </div>
   <div id="list"></div>
 </div>
 
-<!-- リサイズ用キャンバス（非表示） -->
 <canvas id="resizeCanvas" style="display:none;"></canvas>
 
-<!-- 拡大表示オーバーレイ -->
 <div id="imageOverlay" onclick="hideImageOverlay()">
   <img id="overlayImage" src="">
 </div>
 
-<!-- トリミングUI -->
 <div id="cropContainer">
   <div id="cropInner">
     <canvas id="cropCanvas"></canvas>
@@ -146,7 +155,6 @@
   </div>
 </div>
 
-<!-- OCRテキスト選択UI -->
 <div id="ocrPicker">
   <div id="ocrPickerInner">
     <div class="label">OCRテキストから選択</div>
@@ -156,25 +164,21 @@
 </div>
 
 <script>
-  // ===== グローバル状態 =====
-  let contacts = []; // {id,name,phone,email,company,zip,address,tags[],photoUrl,ocrText,createdAt,selected}
+  let contacts = [];
   let searchKeyword = "";
   let sortKey = "created";
 
-  // トリミング用
-  let cropImage = null;        // 元画像 Image
+  let cropImage = null;
   let cropCanvas, cropCtx;
-  let baseCanvas, baseCtx;     // 回転後のベース画像
-  let baseScale = 1;           // baseCanvas → cropCanvas のスケール
+  let baseCanvas, baseCtx;
+  let baseScale = 1;
   let cropStart = null;
   let cropRect = null;
-  let cropRotation = 0;        // 0,90,180,270
+  let cropRotation = 0;
 
-  // OCR Picker 用
   let ocrPickerTargetId = null;
   let ocrPickerTargetField = null;
 
-  // ===== 起動時処理 =====
   window.addEventListener("load", () => {
     const key = localStorage.getItem("vision_api_key");
     if (key) {
@@ -183,11 +187,9 @@
 
     cropCanvas = document.getElementById("cropCanvas");
     cropCtx = cropCanvas.getContext("2d");
-
     baseCanvas = document.createElement("canvas");
     baseCtx = baseCanvas.getContext("2d");
 
-    // contacts の自動復元
     const saved = localStorage.getItem("contacts");
     if (saved) {
       try {
@@ -208,34 +210,25 @@
             selected: !!c.selected
           }));
         }
-      } catch (e) {
-        console.error("contacts復元エラー", e);
-      }
+      } catch (e) { console.error("contacts復元エラー", e); }
     }
     renderList();
   });
 
   function saveApiKey() {
     const key = document.getElementById("apiKeyInput").value.trim();
-    if (!key) {
-      alert("APIキーを入力してください。");
-      return;
-    }
+    if (!key) { alert("APIキーを入力してください。"); return; }
     localStorage.setItem("vision_api_key", key);
     document.getElementById("apiKeyStatus").textContent = "設定済み（******）";
     document.getElementById("apiKeyInput").value = "";
   }
 
   function saveContacts() {
-    try {
-      localStorage.setItem("contacts", JSON.stringify(contacts));
-    } catch (e) {
-      console.error("contacts保存エラー", e);
-    }
+    try { localStorage.setItem("contacts", JSON.stringify(contacts)); }
+    catch (e) { console.error("contacts保存エラー", e); }
   }
 
-  // ===== ここまでが Part 1 =====
-  // 画像選択 → トリミングUIへ
+  // ===== Part 1 ここまで =====
   function onPhotoSelected(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -253,16 +246,12 @@
     e.target.value = "";
   }
 
-  // 回転後のベース画像を作成
   function prepareBaseCanvas() {
     const img = cropImage;
     const rad = cropRotation * Math.PI / 180;
     let bw = img.width;
     let bh = img.height;
-    if (cropRotation % 180 !== 0) {
-      bw = img.height;
-      bh = img.width;
-    }
+    if (cropRotation % 180 !== 0) { bw = img.height; bh = img.width; }
     baseCanvas.width = bw;
     baseCanvas.height = bh;
     baseCtx.setTransform(1,0,0,1,0,0);
@@ -359,7 +348,6 @@
     tmpCtx.fillStyle = "#ffffff";
     tmpCtx.fillRect(0,0,targetW,targetH);
 
-    // cropRect → baseCanvas 座標へ
     const sx = cropRect.x / baseScale;
     const sy = cropRect.y / baseScale;
     const sw = cropRect.w / baseScale;
@@ -412,16 +400,9 @@
 
   async function callVisionAPI(base64Image) {
     const apiKey = localStorage.getItem("vision_api_key");
-    if (!apiKey) {
-      throw new Error("Vision APIキーが保存されていません。");
-    }
+    if (!apiKey) throw new Error("Vision APIキーが保存されていません。");
     const body = {
-      requests: [
-        {
-          image: { content: base64Image },
-          features: [{ type: "TEXT_DETECTION" }]
-        }
-      ]
+      requests: [{ image: { content: base64Image }, features: [{ type: "TEXT_DETECTION" }] }]
     };
     const res = await fetch(
       "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey),
@@ -437,18 +418,12 @@
       throw new Error("Vision API エラー: " + res.status);
     }
     const data = await res.json();
-    const text = data.responses?.[0]?.fullTextAnnotation?.text || "";
-    return text;
+    return data.responses?.[0]?.fullTextAnnotation?.text || "";
   }
 
   function parseOcrText(text) {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
-    let phone = "";
-    let email = "";
-    let company = "";
-    let name = "";
-    let zip = "";
-    let address = "";
+    let phone = "", email = "", company = "", name = "", zip = "", address = "";
 
     const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
     const phoneRegex = /0\d{1,4}-\d{1,4}-\d{3,4}|0\d{9,10}/;
@@ -456,18 +431,10 @@
     const addressRegex = /(北海道|青森県|岩手県|宮城県|秋田県|山形県|福島県|茨城県|栃木県|群馬県|埼玉県|千葉県|東京都|神奈川県|新潟県|富山県|石川県|福井県|山梨県|長野県|岐阜県|静岡県|愛知県|三重県|滋賀県|京都府|大阪府|兵庫県|奈良県|和歌山県|鳥取県|島根県|岡山県|広島県|山口県|徳島県|香川県|愛媛県|高知県|福岡県|佐賀県|長崎県|熊本県|大分県|宮崎県|鹿児島県|沖縄県).+/;
 
     for (const line of lines) {
-      if (!email && emailRegex.test(line)) {
-        email = line.match(emailRegex)[0];
-      }
-      if (!phone && phoneRegex.test(line)) {
-        phone = line.match(phoneRegex)[0];
-      }
-      if (!zip && zipRegex.test(line)) {
-        zip = line.match(zipRegex)[1];
-      }
-      if (!address && addressRegex.test(line)) {
-        address = line.match(addressRegex)[0];
-      }
+      if (!email && emailRegex.test(line)) email = line.match(emailRegex)[0];
+      if (!phone && phoneRegex.test(line)) phone = line.match(phoneRegex)[0];
+      if (!zip && zipRegex.test(line)) zip = line.match(zipRegex)[1];
+      if (!address && addressRegex.test(line)) address = line.match(addressRegex)[0];
     }
 
     const companyLine = lines.find(l => /株式会社|有限会社|合同会社|Inc\.|Co\./i.test(l));
@@ -524,54 +491,76 @@
     listEl.innerHTML = "";
     const list = getFilteredSortedContacts();
     list.forEach(c => {
-      const div = document.createElement("div");
-      div.className = "contact-card";
-
-      const img = document.createElement("img");
-      img.className = "contact-img";
-      img.src = c.photoUrl;
-      img.onclick = () => showImageOverlay(c.photoUrl);
-      div.appendChild(img);
+      const card = document.createElement("div");
+      card.className = "contact-card";
 
       const fields = document.createElement("div");
       fields.className = "contact-fields";
+
       fields.innerHTML = `
-        <label class="small">
-          <input type="checkbox" ${c.selected ? "checked" : ""} onchange="toggleSelect('${c.id}', this.checked)">
-          一括vCard対象
-        </label><br>
-        名前:<br>
-        <input type="text" value="${escapeHtml(c.name)}"
-          onclick="openOcrPicker('name','${c.id}')"
-          onchange="updateField('${c.id}','name',this.value)"><br>
-        会社:<br>
-        <input type="text" value="${escapeHtml(c.company)}"
-          onclick="openOcrPicker('company','${c.id}')"
-          onchange="updateField('${c.id}','company',this.value)"><br>
-        TEL:<br>
-        <input type="tel" value="${escapeHtml(c.phone)}"
-          onclick="openOcrPicker('phone','${c.id}')"
-          onchange="updateField('${c.id}','phone',this.value)"><br>
-        Mail:<br>
-        <input type="email" value="${escapeHtml(c.email)}"
-          onclick="openOcrPicker('email','${c.id}')"
-          onchange="updateField('${c.id}','email',this.value)"><br>
-        郵便番号:<br>
-        <input type="text" value="${escapeHtml(c.zip)}"
-          onclick="openOcrPicker('zip','${c.id}')"
-          onchange="updateField('${c.id}','zip',this.value)"><br>
-        住所:<br>
-        <input type="text" value="${escapeHtml(c.address)}"
-          onclick="openOcrPicker('address','${c.id}')"
-          onchange="updateField('${c.id}','address',this.value)"><br>
-        タグ（スペース区切り）:<br>
-        <input type="text" value="${escapeHtml((c.tags || []).join(' '))}"
-          onchange="updateTags('${c.id}',this.value)"><br>
-        <button onclick="downloadVCardById('${c.id}')">この連絡先を vCard 出力</button>
-        <button onclick="deleteContact('${c.id}')">削除</button>
+        <div class="field-full small">
+          <label>
+            <input type="checkbox" ${c.selected ? "checked" : ""} onchange="toggleSelect('${c.id}', this.checked)">
+            一括vCard対象
+          </label>
+        </div>
+
+        <div>
+          <span class="small">名前</span><br>
+          <input type="text" value="${escapeHtml(c.name)}"
+            onclick="openOcrPicker('name','${c.id}')"
+            onchange="updateField('${c.id}','name',this.value)">
+        </div>
+        <div>
+          <span class="small">会社</span><br>
+          <input type="text" value="${escapeHtml(c.company)}"
+            onclick="openOcrPicker('company','${c.id}')"
+            onchange="updateField('${c.id}','company',this.value)">
+        </div>
+
+        <div>
+          <span class="small">TEL（長押しで発信）</span><br>
+          <input type="tel" value="${escapeHtml(c.phone)}"
+            onclick="openOcrPicker('phone','${c.id}')"
+            onchange="updateField('${c.id}','phone',this.value)"
+            oncontextmenu="callNumber('${escapeHtml(c.phone)}'); return false;">
+        </div>
+        <div>
+          <span class="small">Mail（長押しで作成）</span><br>
+          <input type="email" value="${escapeHtml(c.email)}"
+            onclick="openOcrPicker('email','${c.id}')"
+            onchange="updateField('${c.id}','email',this.value)"
+            oncontextmenu="sendMail('${escapeHtml(c.email)}'); return false;">
+        </div>
+
+        <div>
+          <span class="small">郵便番号</span><br>
+          <input type="text" value="${escapeHtml(c.zip)}"
+            onclick="openOcrPicker('zip','${c.id}')"
+            onchange="updateField('${c.id}','zip',this.value)">
+        </div>
+        <div>
+          <span class="small">住所</span><br>
+          <input type="text" value="${escapeHtml(c.address)}"
+            onclick="openOcrPicker('address','${c.id}')"
+            onchange="updateField('${c.id}','address',this.value)">
+        </div>
+
+        <div class="field-full">
+          <span class="small">タグ（スペース区切り）</span><br>
+          <input type="text" value="${escapeHtml((c.tags || []).join(' '))}"
+            onchange="updateTags('${c.id}',this.value)">
+        </div>
+
+        <img src="${c.photoUrl}" class="contact-photo-wide" onclick="showImageOverlay('${c.photoUrl}')">
+
+        <div class="field-full">
+          <button onclick="downloadVCardById('${c.id}')">この連絡先を vCard 出力</button>
+          <button onclick="deleteContact('${c.id}')">削除</button>
+        </div>
       `;
-      div.appendChild(fields);
-      listEl.appendChild(div);
+      card.appendChild(fields);
+      listEl.appendChild(card);
     });
   }
 
@@ -621,7 +610,6 @@
     downloadVCard(c);
   }
 
-  // 画像拡大表示
   function showImageOverlay(src) {
     const overlay = document.getElementById("imageOverlay");
     const img = document.getElementById("overlayImage");
@@ -634,7 +622,6 @@
     document.getElementById("overlayImage").src = "";
   }
 
-  // OCR Picker
   function openOcrPicker(field, id) {
     const c = findContact(id);
     if (!c || !c.ocrText) {
@@ -673,8 +660,17 @@
     ocrPickerTargetField = null;
   }
 
-  // ===== ここまでが Part 2 =====
-  // vCard生成
+  function callNumber(num) {
+    if (!num) return;
+    window.location.href = "tel:" + num;
+  }
+
+  function sendMail(addr) {
+    if (!addr) return;
+    window.location.href = "mailto:" + addr;
+  }
+
+  // ===== Part 2 ここまで =====
   function buildVCard(contact) {
     const name = contact.name || "";
     const phone = contact.phone || "";
@@ -692,7 +688,6 @@
     if (phone) vcard += "TEL;TYPE=CELL:" + phone + "\n";
     if (email) vcard += "EMAIL:" + email + "\n";
     if (zip || address) {
-      // ADR;TYPE=HOME:;;住所;;;郵便番号;
       vcard += "ADR;TYPE=HOME:;;" + (address || "") + ";;;" + (zip || "") + ";\n";
     }
     if (tags) vcard += "NOTE:" + tags + "\n";
@@ -711,7 +706,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // CSV 出力
   function downloadCSV() {
     let csv = "名前,会社,電話,メール,郵便番号,住所,タグ\n";
     contacts.forEach(c => {
@@ -735,7 +729,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // Excel 出力（SheetJS）
   function downloadXlsx() {
     const data = contacts.map(c => ({
       名前: c.name || "",
@@ -752,7 +745,6 @@
     XLSX.writeFile(wb, "contacts.xlsx");
   }
 
-  // vCard ZIP 一括
   async function downloadVCardZip() {
     const selected = contacts.filter(c => c.selected);
     if (selected.length === 0) {
@@ -774,7 +766,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // バックアップ（JSON）
   function backupContacts() {
     const data = JSON.stringify(contacts, null, 2);
     const blob = new Blob([data], { type: "application/json" });
@@ -786,7 +777,6 @@
     URL.revokeObjectURL(url);
   }
 
-  // 復元（JSON）
   function restoreContacts(e) {
     const file = e.target.files[0];
     if (!file) return;
