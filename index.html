@@ -22,6 +22,8 @@
         .zoom-slider::-webkit-slider-thumb {
             -webkit-appearance: none; appearance: none; width: 24px; height: 24px; background: #fff; border-radius: 50%; cursor: pointer; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
         }
+        /* スマホブラウザのメニューバーを考慮した高さ設定 */
+        .dvh-full { height: 100vh; height: 100dvh; }
     </style>
 </head>
 <body class="text-gray-800 pb-20">
@@ -114,29 +116,32 @@
         </div>
     </main>
 
-    <div id="crop-modal" class="hidden fixed inset-0 bg-black bg-opacity-95 z-[60] flex flex-col p-4">
-        <div class="bg-white rounded-xl overflow-hidden flex flex-col h-full max-h-[85vh] w-full max-w-lg mx-auto shadow-2xl">
-            <div class="p-3 bg-gray-100 border-b flex justify-between items-center">
-                <h3 class="font-bold text-gray-700">画像のトリミング</h3>
-                <button id="cancel-crop-btn" class="text-gray-500 text-3xl font-bold leading-none">&times;</button>
-            </div>
-            <div class="flex-grow bg-black relative touch-none">
-                <img id="crop-image" src="" alt="Crop" class="max-w-full block">
-            </div>
-            <div class="p-4 bg-gray-100 border-t flex justify-end">
-                <button id="apply-crop-btn" class="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 shadow w-full text-lg cursor-pointer active:bg-blue-800">✂️ 切り抜いてOCR</button>
-            </div>
+    <div id="crop-modal" class="hidden fixed inset-0 bg-gray-900 z-[100] flex flex-col dvh-full w-full">
+        <div class="p-3 bg-gray-900 text-white flex justify-between items-center shrink-0 shadow">
+            <h3 class="font-bold">画像のトリミング</h3>
+            <button id="cancel-crop-btn" class="text-gray-400 hover:text-white text-3xl font-bold leading-none px-2">&times;</button>
+        </div>
+        
+        <div class="flex-grow bg-black relative min-h-0 w-full overflow-hidden">
+            <img id="crop-image" src="" alt="Crop" class="max-w-full block">
+        </div>
+        
+        <div class="p-4 bg-gray-900 shrink-0 border-t border-gray-700 pb-8">
+            <button id="apply-crop-btn" class="bg-blue-600 text-white px-6 py-4 rounded-lg font-bold hover:bg-blue-700 shadow-lg w-full text-lg cursor-pointer active:bg-blue-800 transition">
+                ✂️ 切り抜いてOCR
+            </button>
         </div>
     </div>
 
-    <div id="edit-modal" class="hidden fixed inset-0 bg-black bg-opacity-80 z-[60] flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl w-full max-w-lg p-5 flex flex-col h-[85vh] shadow-2xl">
-            <div class="flex justify-between items-center mb-3 border-b pb-2">
+    <div id="edit-modal" class="hidden fixed inset-0 bg-black bg-opacity-80 z-[60] flex items-center justify-center p-2 sm:p-4">
+        <div class="bg-white rounded-xl w-full max-w-lg flex flex-col max-h-full dvh-full sm:h-[85vh] shadow-2xl overflow-hidden">
+            
+            <div class="p-4 flex justify-between items-center border-b shrink-0 bg-white">
                 <h3 id="edit-modal-title" class="font-bold text-gray-800 text-lg">OCR結果の確認・保存</h3>
-                <button id="close-edit-icon" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+                <button id="close-edit-icon" class="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">&times;</button>
             </div>
             
-            <div class="overflow-y-auto flex-grow pr-1">
+            <div class="p-4 overflow-y-auto flex-grow min-h-0 bg-gray-50">
                 <p class="text-[11px] text-gray-500 mb-4 bg-yellow-50 p-2 rounded border border-yellow-200">
                     💡 <b>Tip:</b> 下のテキストエリア内の文字をなぞって選択（ハイライト）し、入力欄の右側のボタンを押すと、文字をコピペせずに自動入力できます。
                 </p>
@@ -146,7 +151,7 @@
                         <span>ファイル名</span>
                         <button type="button" onclick="insertSelectedText('file-name-input')" class="text-[10px] bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded font-bold shadow-sm transition">↑ 選択文字を入力</button>
                     </label>
-                    <input type="text" id="file-name-input" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <input type="text" id="file-name-input" class="w-full border border-gray-300 rounded p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                 </div>
                 
                 <div class="mb-3">
@@ -154,21 +159,21 @@
                         <span>連絡先 / 会社名など</span>
                         <button type="button" onclick="insertSelectedText('company-input')" class="text-[10px] bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded font-bold shadow-sm transition">↑ 選択文字を入力</button>
                     </label>
-                    <input type="text" id="company-input" placeholder="例: 〇〇株式会社" class="w-full border border-gray-300 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <input type="text" id="company-input" placeholder="例: 〇〇株式会社" class="w-full border border-gray-300 rounded p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                 </div>
                 
                 <label class="text-xs font-bold text-gray-500 mb-1 block">読み取りテキスト全文</label>
-                <textarea id="edit-text" class="w-full h-48 border border-gray-300 rounded p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono"></textarea>
+                <textarea id="edit-text" class="w-full h-48 sm:h-64 border border-gray-300 rounded p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono bg-white"></textarea>
             </div>
 
-            <div class="mt-4 flex justify-end gap-3 pt-3 border-t">
+            <div class="p-4 flex justify-end gap-3 border-t shrink-0 bg-white pb-6 sm:pb-4">
                 <button id="cancel-edit-btn" class="bg-gray-200 text-gray-700 px-4 py-3 rounded-lg font-bold hover:bg-gray-300 transition">キャンセル</button>
                 <button id="confirm-edit-btn" class="bg-blue-600 text-white px-4 py-3 rounded-lg font-bold hover:bg-blue-700 shadow transition flex-grow">確定して履歴に保存</button>
             </div>
         </div>
     </div>
 
-    <div id="image-modal" class="hidden fixed inset-0 bg-black bg-opacity-95 z-[70] flex items-center justify-center touch-none">
+    <div id="image-modal" class="hidden fixed inset-0 bg-black bg-opacity-95 z-[110] flex items-center justify-center touch-none">
         <button id="close-image-modal" class="absolute top-4 right-4 text-white text-4xl font-bold z-50 p-2 leading-none">&times;</button>
         <img id="modal-image" src="" alt="拡大画像" class="max-w-full max-h-full transition-transform duration-75 origin-center object-contain">
         <p class="absolute bottom-6 text-white text-sm opacity-75 pointer-events-none bg-black bg-opacity-50 px-3 py-1 rounded-full">2本指でピンチして拡大/縮小</p>
@@ -214,7 +219,7 @@
 
         function showToast(msg, isError = false) {
             toastMsg.textContent = msg;
-            toastMsg.className = `bg-${isError ? 'red' : 'blue'}-100 border-l-4 border-${isError ? 'red' : 'blue'}-500 text-${isError ? 'red' : 'blue'}-700 p-4 mb-4 rounded shadow-sm font-bold text-sm transition-opacity`;
+            toastMsg.className = `bg-${isError ? 'red' : 'blue'}-100 border-l-4 border-${isError ? 'red' : 'blue'}-500 text-${isError ? 'red' : 'blue'}-700 p-4 mb-4 rounded shadow-sm font-bold text-sm transition-opacity z-50 relative`;
             toastMsg.classList.remove('hidden');
             setTimeout(() => toastMsg.classList.add('hidden'), 4000);
         }
@@ -358,10 +363,15 @@
 
         document.getElementById('apply-crop-btn').addEventListener('click', async () => {
             if (!cropper) return;
+            // Crop実行
             const croppedCanvas = cropper.getCroppedCanvas({ maxWidth: 1200, maxHeight: 1200 });
             lastPhotoBase64 = croppedCanvas.toDataURL("image/jpeg", 0.9);
+            
+            // モーダル閉じる・破棄
             cropModal.classList.add('hidden');
             cropper.destroy(); cropper = null;
+            
+            // OCR処理へ
             await executeOCR(lastPhotoBase64.split(",")[1]);
         });
 
@@ -428,7 +438,7 @@
             if (selectedText) {
                 document.getElementById(targetInputId).value = selectedText;
             } else {
-                showToast("先に下のテキストエリア内で入れたい文字をなぞって選択(ハイライト)してください", true);
+                alert("下のテキストエリア内で入れたい文字をなぞって選択(ハイライト)してからボタンを押してください。");
             }
         };
 
@@ -437,13 +447,11 @@
             editText.value = text;
 
             if (historyId) {
-                // 履歴の再編集モード
                 editModalTitle.textContent = "履歴データの修正";
                 fileNameInput.value = existingFileName;
                 companyInput.value = existingCompany;
                 confirmEditBtn.textContent = "変更を保存";
             } else {
-                // 新規スキャンモード
                 editModalTitle.textContent = "OCR結果の確認・保存";
                 companyInput.value = savedCompany;
                 fileNameInput.value = generateDefaultFileName(savedCompany);
@@ -464,7 +472,7 @@
             if (!fixedText) return showToast("テキストが空です", true);
             if (!fileName) return showToast("ファイル名を入力してください", true);
 
-            // 新規作成時のみ、会社名を次回以降のために記憶
+            // 新規作成時のみ記憶
             if (!editingHistoryId) {
                 savedCompany = company;
                 localStorage.setItem("companyName", company);
@@ -505,7 +513,6 @@
             }
         }
 
-        // 履歴の削除
         window.deleteHistory = function(id) {
             if (confirm("この履歴を削除してもよろしいですか？")) {
                 let history = JSON.parse(localStorage.getItem("receiptHistory_simple") || "[]");
@@ -515,7 +522,6 @@
             }
         };
 
-        // 履歴から編集画面を開くラッパー
         window.editFromHistory = function(id) {
             const history = JSON.parse(localStorage.getItem("receiptHistory_simple") || "[]");
             const item = history.find(h => h.id === id);
